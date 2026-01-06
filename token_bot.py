@@ -539,6 +539,7 @@ async def show_token_menu(message: types.Message, state: FSMContext):
     await state.set_state(UserState.choosing_token_type)
 
 # ==================== CALLBACK HANDLERS ====================
+# ==================== CALLBACK HANDLERS ====================
 @dp.callback_query(F.data.startswith("token_"))
 async def handle_token_selection(call: CallbackQuery, state: FSMContext):
     """Handle token type selection"""
@@ -588,4 +589,431 @@ async def handle_token_selection(call: CallbackQuery, state: FSMContext):
     else:
         await generate_and_send_token(call.message, state, telegram_id, token_type)
 
-async def ask_customization(message: types.Message, state: FS
+async def ask_customization(message: types.Message, state: FSMContext):
+    """Ask for custom token parameters"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="32 chars", callback_data="custom_len_32"),
+         InlineKeyboardButton(text="64 chars", callback_data="custom_len_64")],
+        [InlineKeyboardButton(text="🔤 Letters+Digits", callback_data="custom_chars_ld")],
+        [InlineKeyboardButton(text="🔣 Include Special", callback_data="custom_chars_all")],
+        [InlineKeyboardButton(text="🏷️ Add Prefix", callback_data="custom_prefix")],
+        [InlineKeyboardButton(text="✅ Generate Now", callback_data="custom_generate")]
+    ])
+    
+    await message.answer(
+        "*Custom Token Settings:*\n\n"
+        "Configure your token:\n"
+        "• Length: 32 or 64 characters\n"
+        "• Character set: Letters+Digits or include special chars\n"
+        "• Optional prefix (like 'sk_' or 'pk_')\n\n"
+        "Click 'Generate Now' when ready:",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+    
+    await state.set_state(UserState.customizing_token)
+    await state.update_data(custom_length=32, custom_charset="ld", custom_prefix="")
+
+@dp.callback_query(F.data.startswith("custom_"))
+async def handle_customization(call: CallbackQuery, state: FSMContext):
+    """Handle customization options"""
+    action = call.data.split("_")[1]
+    await call.answer()
+    
+    data = await state.get_data()
+    
+    if action == "len":
+        length = int(call.data.split("_")[2])
+        await state.update_data(custom_length=length)
+        await call.message.edit_text(f"✅ Length set to {length} characters")
+    elif action == "chars":
+        charset = call.data.split("_")[2]
+        await state.update_data(custom_charset=charset)
+        await call.message.edit_text(f"✅ Character set updated")
+    elif action == "prefix":
+        await call.message.answer("Send me the prefix (e.g., 'sk_', 'pk_', 'live_'):")
+        await state.set_state(UserState.entering_metadata)
+    elif action == "generate":
+        await generate_and_send_token(call.message, state, call.from_user.id, "custom")
+
+async def ask_jwt_metadata(message: types.Message, state: FSMContext):
+    """Ask for JWT payload data"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Add user_id", callback_data="jwt_user")],
+        [InlineKeyboardButton(text="📧 Add email", callback_data="jwt_email")],
+        [InlineKeyboardButton(text="🎭 Add role", callback_data="jwt_role")],
+        [InlineKeyboardButton(text="⏰ Custom expiry", callback_data="jwt_expiry")],
+        [InlineKeyboardButton(text="✅ Generate Now", callback_data="jwt_generate")]
+    ])
+    
+    await message.answer(
+        "*JWT Token Configuration:*\n\n"
+        "Add custom claims to your JWT:\n"
+        "• user_id - User identifier\n"
+        "• email - User email\n"
+        "• role - User role (admin, user, etc.)\n"
+        "• expiry - Token expiry time\n\n"
+        "Click buttons to add claims, then 'Generate Now':",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+    
+    await state.set_state(UserState.entering_metadata)
+    await state.update_data(jwt_payload={"sample": "data"})
+
+@dp.callback_query(F.data.startswith("jwt_"))
+async def handle_jwt_metadata(call: CallbackQuery, state: FSMContext):
+    """Handle JWT metadata"""
+    action = call.data.split("_")[1]
+    await call.answer()
+    
+    if action in ["user", "email", "role", "expiry"]:
+        prompt = {
+            "user": "Enter user_id value:",
+            "email": "Enter email value:",
+            "role": "Enter role value:",
+            "expiry": "Enter expiry in hours (1-720):"
+        }[action]
+        
+        await call.message.answer(prompt)
+        await state.update_data(jwt_action=action)
+    elif action == "generate":
+        await generate_and_send_token(call.message, state, call.from_user.id, "jwt")
+
+@dp.message(UserState.entering_metadata)
+async def handle_metadata_input(message: Message, state: FSMContext):
+    """Handle metadata input"""
+    data = await state.get_data()
+    token_type = data.get("token_type")
+    text = message.text
+    
+    if token_type == "custom" and data.get("waiting_for") == "prefix":
+        await state.update_data(custom_prefix=text)
+        await message.answer(f"✅ Prefix set to '{text}'")
+        await ask_customization(message, state)
+    
+    elif token_type == "jwt":
+        action = data.get("jwt_action")
+        payload = data.get("jwt_payload", {})
+        
+        if action == "user":
+            payload["user_id"] = text
+        elif action == "email":
+            payload["email"] = text
+        elif action == "role":
+            payload["role"] = text
+        elif action == "expiry":
+            try:
+                hours = int(text)
+                payload["exp_hours"] = min(max(1, hours), 720)
+            except:
+                payload["exp_hours"] = 24
+        
+        await state.update_data(jwt_payload=payload)
+        await message.answer(f"✅ Added {action} to JWT payload")
+        await ask_jwt_metadata(message, state)
+
+# ==================== TOKEN GENERATION ====================
+async def generate_and_send_token(
+    message: types.Message, 
+    state: FSMContext, 
+    telegram_id: int,
+    token_type: str
+):
+    """Generate and send token to user"""
+    try:
+        data = await state.get_data()
+        generator = TokenGenerator()
+        token = ""
+        credits_used = 0
+        
+        # Check if using free token
+        user = await DatabaseManager.get_user(telegram_id)
+        free_tokens_used = user.get("free_tokens_used_today", 0)
+        last_reset = datetime.fromisoformat(user.get("free_tokens_last_reset", datetime.utcnow().isoformat()))
+        
+        # Reset if new day
+        if last_reset.date() < datetime.utcnow().date():
+            free_tokens_used = 0
+        
+        using_free_token = free_tokens_used < Pricing.FREE_DAILY_LIMIT
+        
+        if token_type == "api":
+            token = generator.generate_api_key()
+            credits_used = Pricing.PRICES[TokenType.API_KEY]
+        elif token_type == "jwt":
+            payload = data.get("jwt_payload", {})
+            exp_hours = payload.pop("exp_hours", 24)
+            token = generator.generate_jwt(payload, exp_hours)
+            credits_used = Pricing.PRICES[TokenType.JWT]
+        elif token_type == "uuid":
+            token = generator.generate_uuid()
+            credits_used = Pricing.PRICES[TokenType.UUID]
+        elif token_type == "custom":
+            length = data.get("custom_length", 32)
+            charset = data.get("custom_charset", "ld")
+            prefix = data.get("custom_prefix", "")
+            
+            include_special = charset == "all"
+            token = generator.generate_custom_token(
+                length=length,
+                prefix=prefix,
+                include_special=include_special
+            )
+            credits_used = Pricing.PRICES[TokenType.CUSTOM]
+        elif token_type == "bulk":
+            tokens = [generator.generate_api_key() for _ in range(10)]
+            token = "\n".join(tokens)
+            credits_used = Pricing.PRICES[TokenType.BULK]
+        
+        # Update user credits or free token count
+        if using_free_token and credits_used <= 5:  # Only free for basic tokens
+            # Update free token count
+            supabase.table("users") \
+                .update({
+                    "free_tokens_used_today": free_tokens_used + 1,
+                    "free_tokens_last_reset": datetime.utcnow().isoformat()
+                }) \
+                .eq("telegram_id", telegram_id) \
+                .execute()
+            
+            charge_text = "🎫 (Used 1 free token)"
+        else:
+            # Deduct credits
+            await DatabaseManager.update_user_credits(telegram_id, -credits_used)
+            charge_text = f"💎 (Cost: {credits_used} credits)"
+        
+        # Record the generation
+        await DatabaseManager.record_token_generation(
+            telegram_id=telegram_id,
+            token_type=token_type,
+            credits_used=0 if using_free_token else credits_used,
+            token_preview=token[:50] if isinstance(token, str) else "bulk"
+        )
+        
+        # Send the token
+        token_display = f"`{token}`" if token_type != "bulk" else token
+        
+        response = f"""
+✅ *Token Generated Successfully!*
+
+*Type:* {token_type.upper()}
+*Status:* {charge_text}
+*Generated:* {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}
+
+*Your Token:*
+```{token_display}```
+
+*Important Notes:*
+• Store this token securely
+• This is for educational/personal use only
+• Do not use in production without review
+• Regenerate if compromised
+
+Need another token? Use /gentoken
+"""
+        
+        await message.answer(response, parse_mode="Markdown")
+        
+        # Add copy button for single tokens
+        if token_type != "bulk":
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📋 Copy Token", callback_data=f"copy_{hashlib.md5(token.encode()).hexdigest()[:8]}")]
+            ])
+            await message.answer("Click to copy:", reply_markup=keyboard)
+        
+        await state.clear()
+        
+    except Exception as e:
+        logging.error(f"Error generating token: {e}")
+        await message.answer(f"❌ Error generating token: {str(e)}")
+        await state.clear()
+
+# ==================== CREDIT PURCHASE ====================
+@dp.message(Command("buycredits"))
+async def cmd_buycredits(message: Message):
+    """Show credit purchase options"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💎 100 credits (50 Stars)", callback_data="buy_50")],
+        [InlineKeyboardButton(text="💎 250 credits (100 Stars)", callback_data="buy_100")],
+        [InlineKeyboardButton(text="💎 750 credits (250 Stars)", callback_data="buy_250")],
+        [InlineKeyboardButton(text="💎 2000 credits (500 Stars)", callback_data="buy_500")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="menu_main")]
+    ])
+    
+    text = """
+*Buy Credits*
+
+Choose a credit package:
+
+💎 *100 credits* - 50 Stars ($0.50)
+💎 *250 credits* - 100 Stars ($1.00)
+💎 *750 credits* - 250 Stars ($2.50)
+💎 *2000 credits* - 500 Stars ($5.00)
+
+*Best Value:* 2000 credits for 500 Stars!
+
+*What you can buy:*
+• 400 API Keys
+• 200 JWT tokens
+• 666 UUIDs
+• 250 Custom tokens
+
+Click a package to purchase:
+"""
+    
+    await message.answer(text, parse_mode="Markdown", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("buy_"))
+async def handle_buy_selection(call: CallbackQuery):
+    """Handle credit package selection"""
+    stars_amount = int(call.data.split("_")[1])
+    credits_amount = Pricing.CREDIT_PACKAGES.get(stars_amount, stars_amount * 2)
+    
+    await call.answer()
+    
+    # Create invoice
+    invoice_link = await bot.create_invoice_link(
+        title=f"TokenGen Bot - {credits_amount} Credits",
+        description=f"Purchase {credits_amount} credits for token generation",
+        payload=f"credits_{credits_amount}_{call.from_user.id}",
+        provider_token=Config.PROVIDER_TOKEN,
+        currency="XTR",
+        prices=[LabeledPrice(label=f"{credits_amount} Credits", amount=stars_amount)]
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Pay Now", url=invoice_link)],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="menu_buy")]
+    ])
+    
+    await call.message.edit_text(
+        f"*Purchase Confirmation*\n\n"
+        f"⭐ *Stars:* {stars_amount}\n"
+        f"💎 *Credits:* {credits_amount}\n"
+        f"💰 *Value:* ${stars_amount/100:.2f}\n\n"
+        f"Click 'Pay Now' to complete your purchase:",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+
+# ==================== UTILITY FUNCTIONS ====================
+async def get_user_credits(telegram_id: int) -> int:
+    """Get user's credit balance"""
+    user = await DatabaseManager.get_user(telegram_id)
+    return user.get("credits", 0) if user else 0
+
+@dp.callback_query(F.data.startswith("menu_"))
+async def handle_menu(call: CallbackQuery, state: FSMContext):
+    """Handle menu navigation"""
+    menu = call.data.split("_")[1]
+    await call.answer()
+    
+    if menu == "gentoken":
+        await show_token_menu(call.message, state)
+    elif menu == "buy":
+        await cmd_buycredits(call.message)
+    elif menu == "help":
+        await cmd_help(call.message)
+    elif menu == "credits":
+        await cmd_mycredits(call.message)
+    elif menu == "main":
+        await cmd_start(call.message)
+
+@dp.callback_query(F.data.startswith("copy_"))
+async def handle_copy(call: CallbackQuery):
+    """Handle copy token request"""
+    await call.answer("Token copied to clipboard!", show_alert=True)
+
+# ==================== ADMIN COMMANDS ====================
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    """Admin commands"""
+    if message.from_user.id != Config.ADMIN_ID:
+        await message.answer("❌ Access denied")
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Stats", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="👥 Users", callback_data="admin_users")],
+        [InlineKeyboardButton(text="💳 Transactions", callback_data="admin_transactions")]
+    ])
+    
+    await message.answer("🔧 *Admin Panel*", parse_mode="Markdown", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("admin_"))
+async def handle_admin(call: CallbackQuery):
+    """Handle admin actions"""
+    if call.from_user.id != Config.ADMIN_ID:
+        await call.answer("❌ Access denied")
+        return
+    
+    action = call.data.split("_")[1]
+    
+    if action == "stats":
+        # Get statistics
+        try:
+            users_count = len(supabase.table("users").select("*").execute().data)
+            payments = supabase.table("payments").select("*").execute().data
+            total_stars = sum(p["stars_amount"] for p in payments)
+            total_tokens = len(supabase.table("token_transactions").select("*").execute().data)
+            
+            text = f"""
+📊 *Bot Statistics*
+
+👥 Total Users: {users_count}
+💳 Total Payments: {len(payments)}
+⭐ Total Stars: {total_stars}
+💰 Estimated Revenue: ${total_stars/100:.2f}
+🔑 Tokens Generated: {total_tokens}
+            """
+            await call.message.answer(text, parse_mode="Markdown")
+        except Exception as e:
+            await call.message.answer(f"Error: {str(e)}")
+
+# ==================== STARTUP ====================
+@app.on_event("startup")
+async def on_startup():
+    """Initialize bot on startup"""
+    logging.basicConfig(level=logging.INFO)
+    logging.info("TokenGen Bot starting up...")
+    
+    # Create tables if they don't exist
+    await create_tables()
+    
+    # Set commands
+    commands = [
+        types.BotCommand(command="start", description="Start the bot"),
+        types.BotCommand(command="gentoken", description="Generate a token"),
+        types.BotCommand(command="mycredits", description="Check your credits"),
+        types.BotCommand(command="buycredits", description="Buy more credits"),
+        types.BotCommand(command="help", description="Show help")
+    ]
+    
+    await bot.set_my_commands(commands)
+    
+    # If webhook is not set, use polling for development
+    # For production, use webhook instead
+    import sys
+    if "uvicorn" not in sys.modules:
+        asyncio.create_task(dp.start_polling(bot))
+
+async def create_tables():
+    """Create necessary database tables"""
+    if not supabase:
+        logging.warning("Supabase not configured - running without database")
+        return
+    
+    try:
+        # Check if tables exist, create if not
+        tables = supabase.table("users").select("*").limit(1).execute()
+        logging.info("Database connected successfully")
+    except Exception as e:
+        logging.error(f"Database error: {e}")
+
+# ==================== MAIN ====================
+if __name__ == "__main__":
+    # For development with polling
+    import asyncio
+    asyncio.run(dp.start_polling(bot))
+    

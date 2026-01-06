@@ -1,0 +1,34 @@
+# ===================================================
+# FILE: railway.toml
+# RAILWAY DEPLOYMENT CONFIG
+# ===================================================
+
+[build]
+builder = "nixpacks"
+buildCommand = "pip install -r requirements.txt"
+
+[deploy]
+startCommand = "uvicorn token_bot:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/"
+healthcheckTimeout = 30
+
+[[variables]]
+key = "BOT_TOKEN"
+description = "Telegram Bot Token from @BotFather"
+
+[[variables]]
+key = "SUPABASE_URL"
+description = "Supabase Project URL"
+
+[[variables]]
+key = "SUPABASE_KEY"
+description = "Supabase Anon/Service Key"
+
+[[variables]]
+key = "ADMIN_ID"
+description = "Your Telegram User ID"
+
+[[variables]]
+key = "JWT_SECRET"
+description = "Secret for JWT generation"
+generate = true

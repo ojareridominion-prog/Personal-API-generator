@@ -342,10 +342,21 @@ async def telegram_webhook(request: Request):
 
 @app.get("/set-webhook")
 async def set_webhook():
-    """Set webhook URL"""
-    webhook_url = f"https://your-domain.com/webhook"  # Change this!
+    """Set webhook URL dynamically"""
+    # Get domain from environment or use the current host
+    webhook_domain = os.environ.get("RENDER_EXTERNAL_URL", "")
+    if not webhook_domain:
+        # Fallback: construct from Render's typical pattern
+        service_name = os.environ.get("RENDER_SERVICE_NAME", "personal-api-generator")
+        webhook_domain = f"https://{service_name}.onrender.com"
+    
+    webhook_url = f"{webhook_domain}/webhook"
     await bot.set_webhook(url=webhook_url, drop_pending_updates=True)
-    return {"status": "Webhook set", "url": webhook_url}
+    return {
+        "status": "Webhook set", 
+        "url": webhook_url,
+        "domain": webhook_domain
+        }
 
 # ==================== PAYMENT HANDLERS ====================
 @dp.pre_checkout_query()

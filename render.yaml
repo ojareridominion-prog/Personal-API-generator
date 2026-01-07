@@ -5,8 +5,7 @@ services:
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
-    startCommand: |
-      python -m uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: python main.py  # CHANGED THIS
     envVars:
       - key: PORT
         value: 10000
@@ -25,4 +24,4 @@ services:
       - key: PROVIDER_TOKEN
         sync: false
     autoDeploy: true
-    healthCheckPath: /docs
+    healthCheckPath: /

@@ -1,1 +1,572 @@
+# ===================================================
+# FILE: token_bot.py
+# COMPLETE API TOKEN GENERATOR BOT WITH PAYMENTS
+# ===================================================
 
+import os
+import logging
+import secrets
+import string
+import uuid
+import json
+import time
+import asyncio
+import hashlib
+import html
+from datetime import datetime, timedelta
+from typing import Optional, Dict, List
+from enum import Enum
+
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import Command
+from aiogram.types import (
+    Message, Update, CallbackQuery, InlineKeyboardMarkup, 
+    InlineKeyboardButton, PreCheckoutQuery, ContentType,
+    LabeledPrice, WebAppInfo
+)
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from supabase import create_client, Client
+from pydantic import BaseModel
+import jwt
+
+# ==================== CONFIGURATION ====================
+class Config:
+    # Environment variables
+    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+    ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
+    SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+    
+    # Payment settings - CHANGE THIS LINE
+    PROVIDER_TOKEN = os.environ.get("PROVIDER_TOKEN", "")  # Get from @BotFather
+    DEFAULT_STARS = 149  # $1.49 for basic subscription
+    
+    # JWT settings (for educational tokens only)
+    JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_urlsafe(32))
+    
+    # Free tier limits
+    FREE_TOKENS_PER_DAY = 3
+    FREE_TOKEN_LENGTH = 32
+
+# Initialize
+app = FastAPI(title="TokenGen Bot API")
+bot = Bot(token=Config.BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+supabase: Optional[Client] = None
+
+if Config.SUPABASE_URL and Config.SUPABASE_KEY:
+    supabase = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ==================== DATABASE MODELS ====================
+class TokenType(str, Enum):
+    API_KEY = "api_key"
+    JWT = "jwt"
+    UUID = "uuid"
+    CUSTOM = "custom"
+    BULK = "bulk"
+
+class UserState(StatesGroup):
+    """FSM states for token generation flow"""
+    choosing_token_type = State()
+    customizing_token = State()
+    entering_metadata = State()
+    confirming_purchase = State()
+
+# ==================== TOKEN GENERATION ENGINE ====================
+class TokenGenerator:
+    """Core token generation engine"""
+    
+    @staticmethod
+    def generate_api_key(length: int = 32, prefix: str = "", suffix: str = "") -> str:
+        """Generate a secure API key"""
+        alphabet = string.ascii_letters + string.digits + "_-"
+        key = ''.join(secrets.choice(alphabet) for _ in range(length))
+        
+        if prefix:
+            key = f"{prefix}_{key}"
+        if suffix:
+            key = f"{key}_{suffix}"
+            
+        return key
+    
+    @staticmethod
+    def generate_jwt(payload: Dict, expires_hours: int = 24) -> str:
+        """Generate educational JWT token (FOR LEARNING ONLY)"""
+        # Add standard claims
+        payload.update({
+            "iat": datetime.utcnow(),
+            "exp": datetime.utcnow() + timedelta(hours=expires_hours),
+            "iss": "TokenGenBot (Educational)",
+            "aud": "Learning Environment",
+            "sub": "sample_user"
+        })
+        
+        # Generate token with educational header
+        token = jwt.encode(
+            payload, 
+            Config.JWT_SECRET,
+            algorithm="HS256"
+        )
+        
+        return token
+    
+    @staticmethod
+    def generate_uuid(version: int = 4) -> str:
+        """Generate UUID token"""
+        if version == 4:
+            return str(uuid.uuid4())
+        elif version == 1:
+            return str(uuid.uuid1())
+        else:
+            return str(uuid.uuid4())
+    
+    @staticmethod
+    def generate_custom_token(
+        length: int = 32,
+        include_uppercase: bool = True,
+        include_lowercase: bool = True,
+        include_digits: bool = True,
+        include_special: bool = False,
+        prefix: str = "",
+        suffix: str = ""
+    ) -> str:
+        """Generate custom token with specific requirements"""
+        charset = ""
+        if include_uppercase:
+            charset += string.ascii_uppercase
+        if include_lowercase:
+            charset += string.ascii_lowercase
+        if include_digits:
+            charset += string.digits
+        if include_special:
+            charset += "_-!@#$%^&*"
+        
+        if not charset:
+            charset = string.ascii_letters + string.digits
+        
+        token = ''.join(secrets.choice(charset) for _ in range(length))
+        
+        if prefix:
+            token = f"{prefix}_{token}"
+        if suffix:
+            token = f"{token}_{suffix}"
+            
+        return token
+
+# ==================== DATABASE FUNCTIONS ====================
+class DatabaseManager:
+    """Handles all database operations"""
+    
+    @staticmethod
+    async def get_user(telegram_id: int) -> Optional[Dict]:
+        """Get user from database"""
+        try:
+            if not supabase:
+                return None
+                
+            result = supabase.table("users") \
+                .select("*") \
+                .eq("telegram_id", telegram_id) \
+                .execute()
+            
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logging.error(f"Error getting user: {e}")
+            return None
+    
+    @staticmethod
+    async def create_user(telegram_id: int, username: str = "", first_name: str = "") -> Dict:
+        """Create new user in database"""
+        try:
+            if not supabase:
+                return {"telegram_id": telegram_id, "credits": 0, "is_premium": False}
+                
+            user_data = {
+                "telegram_id": telegram_id,
+                "username": username,
+                "first_name": first_name,
+                "credits": 0,
+                "is_premium": False,
+                "created_at": datetime.utcnow().isoformat(),
+                "last_active": datetime.utcnow().isoformat(),
+                "tokens_generated": 0,
+                "free_tokens_used_today": 0,
+                "free_tokens_last_reset": datetime.utcnow().isoformat()
+            }
+            
+            result = supabase.table("users").insert(user_data).execute()
+            return result.data[0] if result.data else user_data
+        except Exception as e:
+            logging.error(f"Error creating user: {e}")
+            return {"telegram_id": telegram_id, "credits": 0, "is_premium": False}
+    
+    @staticmethod
+    async def update_user_credits(telegram_id: int, credits_change: int) -> bool:
+        """Update user's credits"""
+        try:
+            if not supabase:
+                return False
+                
+            user = await DatabaseManager.get_user(telegram_id)
+            if not user:
+                return False
+            
+            new_credits = max(0, user.get("credits", 0) + credits_change)
+            
+            supabase.table("users") \
+                .update({
+                    "credits": new_credits,
+                    "last_active": datetime.utcnow().isoformat()
+                }) \
+                .eq("telegram_id", telegram_id) \
+                .execute()
+            
+            return True
+        except Exception as e:
+            logging.error(f"Error updating credits: {e}")
+            return False
+    
+    @staticmethod
+    async def record_token_generation(
+        telegram_id: int,
+        token_type: str,
+        credits_used: int,
+        token_preview: str = ""
+    ) -> bool:
+        """Record token generation in database"""
+        try:
+            if not supabase:
+                return False
+            
+            # Update user's token count
+            user = await DatabaseManager.get_user(telegram_id)
+            if user:
+                supabase.table("users") \
+                    .update({
+                        "tokens_generated": user.get("tokens_generated", 0) + 1,
+                        "last_active": datetime.utcnow().isoformat()
+                    }) \
+                    .eq("telegram_id", telegram_id) \
+                    .execute()
+            
+            # Record the transaction
+            transaction_data = {
+                "telegram_id": telegram_id,
+                "token_type": token_type,
+                "credits_used": credits_used,
+                "token_preview": token_preview[:50] + "..." if len(token_preview) > 50 else token_preview,
+                "generated_at": datetime.utcnow().isoformat()
+            }
+            
+            supabase.table("token_transactions").insert(transaction_data).execute()
+            return True
+        except Exception as e:
+            logging.error(f"Error recording token: {e}")
+            return False
+    
+    @staticmethod
+    async def record_payment(
+        telegram_id: int,
+        stars_amount: int,
+        credits_purchased: int,
+        transaction_id: str
+    ) -> bool:
+        """Record payment in database"""
+        try:
+            if not supabase:
+                return False
+            
+            payment_data = {
+                "telegram_id": telegram_id,
+                "stars_amount": stars_amount,
+                "credits_purchased": credits_purchased,
+                "transaction_id": transaction_id,
+                "status": "completed",
+                "payment_date": datetime.utcnow().isoformat()
+            }
+            
+            supabase.table("payments").insert(payment_data).execute()
+            return True
+        except Exception as e:
+            logging.error(f"Error recording payment: {e}")
+            return False
+
+# ==================== PRICING CONFIG ====================
+class Pricing:
+    """Token pricing in credits"""
+    
+    # Token types and their credit costs
+    PRICES = {
+        TokenType.API_KEY: 5,       # 5 credits
+        TokenType.JWT: 10,           # 10 credits
+        TokenType.UUID: 3,           # 3 credits
+        TokenType.CUSTOM: 8,         # 8 credits
+        TokenType.BULK: 20           # 20 credits for 10 tokens
+    }
+    
+    # Credit packages (credits per stars)
+    CREDIT_PACKAGES = {
+        50: 100,    # 50 stars = 100 credits ($0.50 = $1.00 value)
+        100: 250,   # 100 stars = 250 credits ($1.00 = $2.50 value)
+        250: 750,   # 250 stars = 750 credits ($2.50 = $7.50 value)
+        500: 2000   # 500 stars = 2000 credits ($5.00 = $20.00 value)
+    }
+    
+    # Free tier limits
+    FREE_DAILY_LIMIT = 3
+    FREE_TOKEN_LENGTH = 32
+
+# ==================== WEBHOOK ENDPOINTS ====================
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    """Telegram webhook handler"""
+    try:
+        update_data = await request.json()
+        update = Update(**update_data)
+        await dp.feed_update(bot, update)
+        return {"status": "ok"}
+    except Exception as e:
+        logging.error(f"Webhook error: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/set-webhook")
+async def set_webhook():
+    """Set webhook URL dynamically"""
+    # Get domain from environment or use the current host
+    webhook_domain = os.environ.get("RENDER_EXTERNAL_URL", "")
+    if not webhook_domain:
+        # Fallback: construct from Render's typical pattern
+        service_name = os.environ.get("RENDER_SERVICE_NAME", "personal-api-generator")
+        webhook_domain = f"https://{service_name}.onrender.com"
+    
+    webhook_url = f"{webhook_domain}/webhook"
+    await bot.set_webhook(url=webhook_url, drop_pending_updates=True)
+    return {
+        "status": "Webhook set", 
+        "url": webhook_url,
+        "domain": webhook_domain
+        }
+
+# ==================== PAYMENT HANDLERS ====================
+@dp.pre_checkout_query()
+async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
+    """Handle pre-checkout query"""
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@dp.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)
+async def successful_payment_handler(message: Message):
+    """Handle successful payment with Telegram Stars"""
+    try:
+        payment = message.successful_payment
+        telegram_id = message.from_user.id
+        
+        # Stars are in cents (100 stars = $1.00)
+        stars_amount = payment.total_amount // 100  # Convert to whole stars
+        
+        # Map stars to credits (from Pricing.CREDIT_PACKAGES)
+        credits_purchased = Pricing.CREDIT_PACKAGES.get(stars_amount, stars_amount * 2)
+        
+        logging.info(f"Payment received: {stars_amount} Stars -> {credits_purchased} credits for user {telegram_id}")
+        
+        # Update user's credits
+        success = await DatabaseManager.update_user_credits(telegram_id, credits_purchased)
+        
+        if success:
+            # Record payment
+            await DatabaseManager.record_payment(
+                telegram_id=telegram_id,
+                stars_amount=stars_amount,
+                credits_purchased=credits_purchased,
+                transaction_id=payment.telegram_payment_charge_id
+            )
+            
+            # Send confirmation
+            await message.answer(
+                f"🎉 *Payment Successful!*\n\n"
+                f"⭐ *Stars Received:* {stars_amount}\n"
+                f"💎 *Credits Added:* {credits_purchased}\n"
+                f"💰 *Transaction ID:* `{payment.telegram_payment_charge_id}`\n\n"
+                f"Your total credits: {await get_user_credits(telegram_id)}\n\n"
+                f"Use /gentoken to generate tokens or /mycredits to check balance!",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.answer(
+                "❌ Payment received but failed to update credits. "
+                "Please contact admin with your transaction ID."
+            )
+            
+    except Exception as e:
+        logging.error(f"Payment processing error: {e}")
+        await message.answer(
+            "❌ Error processing payment. Please contact admin with transaction details."
+        )
+
+# ==================== COMMAND HANDLERS ====================
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    """Start command handler"""
+    telegram_id = message.from_user.id
+    user = await DatabaseManager.get_user(telegram_id)
+    
+    if not user:
+        await DatabaseManager.create_user(
+            telegram_id=telegram_id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name
+        )
+    
+    welcome_text = """
+🔐 *Welcome to TokenGen Bot!*
+
+I help you generate secure API tokens for your personal projects.
+
+*Features:*
+• Generate API Keys, JWT tokens, UUIDs
+• Custom token formats
+• Secure & random generation
+• Educational JWT examples
+
+*Commands:*
+/gentoken - Generate a new token
+/mycredits - Check your credits
+/buycredits - Buy more credits
+/help - Show help
+
+*Pricing:*
+- API Key: 5 credits
+- JWT Token: 10 credits
+- UUID: 3 credits
+- Custom Token: 8 credits
+
+*Free Tier:* 3 tokens per day
+"""
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔐 Generate Token", callback_data="menu_gentoken")],
+        [InlineKeyboardButton(text="💎 Buy Credits", callback_data="menu_buy")],
+        [InlineKeyboardButton(text="ℹ️  Help", callback_data="menu_help")]
+    ])
+    
+    await message.answer(welcome_text, parse_mode="Markdown", reply_markup=keyboard)
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    """Help command"""
+    help_text = """
+*TokenGen Bot Help*
+
+*How it works:*
+1. You need credits to generate tokens
+2. Get free credits daily or buy more
+3. Choose token type and generate
+
+*Token Types:*
+• *API Key* - Standard API key (32 chars)
+• *JWT* - JSON Web Token with sample payload
+• *UUID* - Universally Unique Identifier
+• *Custom* - Configure your own format
+
+*For Educational Use Only:*
+⚠️ Tokens generated are for learning, testing, and personal projects only.
+⚠️ Do not use for production without proper security review.
+⚠️ Store tokens securely!
+
+*Commands:*
+/start - Start the bot
+/gentoken - Generate token
+/mycredits - Check credits
+/buycredits - Buy credits
+/help - This help message
+
+Need support? Contact @yourusername
+"""
+    await message.answer(help_text, parse_mode="Markdown")
+
+@dp.message(Command("mycredits"))
+async def cmd_mycredits(message: Message):
+    """Check user credits"""
+    telegram_id = message.from_user.id
+    user = await DatabaseManager.get_user(telegram_id)
+    
+    if not user:
+        user = await DatabaseManager.create_user(telegram_id)
+    
+    credits = user.get("credits", 0)
+    tokens_generated = user.get("tokens_generated", 0)
+    
+    # Check free tokens
+    last_reset = datetime.fromisoformat(user.get("free_tokens_last_reset", datetime.utcnow().isoformat()))
+    today = datetime.utcnow().date()
+    
+    if last_reset.date() < today:
+        free_tokens_used = 0
+    else:
+        free_tokens_used = user.get("free_tokens_used_today", 0)
+    
+    free_tokens_left = max(0, Pricing.FREE_DAILY_LIMIT - free_tokens_used)
+    
+    text = f"""
+*Your Account Status*
+
+💎 *Credits:* {credits}
+🎫 *Free tokens today:* {free_tokens_left} / {Pricing.FREE_DAILY_LIMIT}
+📊 *Total tokens generated:* {tokens_generated}
+
+*Credit Costs:*
+• API Key: {Pricing.PRICES[TokenType.API_KEY]} credits
+• JWT: {Pricing.PRICES[TokenType.JWT]} credits
+• UUID: {Pricing.PRICES[TokenType.UUID]} credits
+• Custom: {Pricing.PRICES[TokenType.CUSTOM]} credits
+"""
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔐 Generate Token", callback_data="menu_gentoken")],
+        [InlineKeyboardButton(text="💎 Buy Credits", callback_data="menu_buy")]
+    ])
+    
+    await message.answer(text, parse_mode="Markdown", reply_markup=keyboard)
+
+@dp.message(Command("gentoken"))
+async def cmd_gentoken(message: Message, state: FSMContext):
+    """Start token generation menu"""
+    await show_token_menu(message, state)
+
+async def show_token_menu(message: types.Message, state: FSMContext):
+    """Show token type selection menu"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔑 API Key (5 credits)", callback_data="token_api")],
+        [InlineKeyboardButton(text="🎫 JWT (10 credits)", callback_data="token_jwt")],
+        [InlineKeyboardButton(text="🆔 UUID (3 credits)", callback_data="token_uuid")],
+        [InlineKeyboardButton(text="⚙️ Custom (8 credits)", callback_data="token_custom")],
+        [InlineKeyboardButton(text="📦 Bulk (20 credits)", callback_data="token_bulk")],
+        [InlineKeyboardButton(text="💎 My Credits", callback_data="menu_credits")]
+    ])
+    
+    await message.answer(
+        "*Choose Token Type:*\n\n"
+        "🔑 *API Key* - Standard API key format\n"
+        "🎫 *JWT* - JSON Web Token with sample data\n"
+        "🆔 *UUID* - Universally Unique Identifier\n"
+        "⚙️ *Custom* - Configure your own format\n"
+        "📦 *Bulk* - Generate 10 API keys at once\n\n"
+        "Click on your choice below:",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+    
+    await state.set_state(UserState.choosing_token_type)
+
+# ==================== CALLBACK HANDLERS ====================

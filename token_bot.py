@@ -41,8 +41,8 @@ class Config:
     SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
     SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
     
-    # Payment settings
-    PROVIDER_TOKEN = ""  # Get from @BotFather for production
+    # Payment settings - CHANGE THIS LINE
+    PROVIDER_TOKEN = os.environ.get("PROVIDER_TOKEN", "")  # Get from @BotFather
     DEFAULT_STARS = 149  # $1.49 for basic subscription
     
     # JWT settings (for educational tokens only)

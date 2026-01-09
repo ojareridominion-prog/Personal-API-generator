@@ -456,7 +456,7 @@ I help you generate secure API tokens for your personal projects.
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔐 Generate Token", callback_data="menu_gentoken")],
-        [InlineKeyboardButton(text="💎 Buy Credits", callback_data="menu_buy")],
+        [InlineKeyboardButton(text="💎 Buy Credits", callback_data="menu_buy")],  # Fixed callback data
         [InlineKeyboardButton(text="ℹ️  Help", callback_data="menu_help")]
     ])
     
@@ -979,7 +979,7 @@ Need more tokens? Use /gentoken
 
 @dp.message(Command("buycredits"))
 async def cmd_buycredits(message: Message):
-    """Show credit purchase options with invoice buttons"""
+    """Show credit purchase options"""
     
     # Check if payments are configured
     if not Config.PROVIDER_TOKEN:
@@ -989,48 +989,48 @@ async def cmd_buycredits(message: Message):
             "1. Talk to @BotFather\n"
             "2. Send /mybots\n"
             "3. Select your bot\n"
-            "4. Select Payments\n"
+            "4. Choose *Payments*\n"
             "5. Follow the setup instructions\n\n"
             "Once configured, the admin needs to add the PROVIDER_TOKEN to environment variables.",
             parse_mode="Markdown"
         )
         return
     
-    # Create inline keyboard with invoice buttons
+    # Create inline keyboard with credit packages
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(
                 text="💎 100 credits (50 Stars)", 
-                pay=True  # This makes it a payment button
+                callback_data="buy_50"
             )
         ],
         [
             InlineKeyboardButton(
                 text="💎 250 credits (100 Stars)", 
-                pay=True
+                callback_data="buy_100"
             )
         ],
         [
             InlineKeyboardButton(
                 text="💎 750 credits (250 Stars)", 
-                pay=True
+                callback_data="buy_250"
             )
         ],
         [
             InlineKeyboardButton(
                 text="💎 2000 credits (500 Stars)", 
-                pay=True
+                callback_data="buy_500"
             )
         ],
         [
-            InlineKeyboardButton(text="🔙 Back", callback_data="menu_main")
+            InlineKeyboardButton(text="🔙 Back to Menu", callback_data="menu_main")
         ]
     ])
     
     text = """
 *Buy Credits*
 
-Click a package to purchase:
+Choose a package:
 
 💎 *100 credits* - 50 Stars ($0.50)
 💎 *250 credits* - 100 Stars ($1.00)

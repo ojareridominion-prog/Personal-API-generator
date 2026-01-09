@@ -367,33 +367,52 @@ async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
 
 @dp.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)
 async def successful_payment_handler(message: Message):
-    """Handle successful payment"""
-    payment = message.successful_payment
-    telegram_id = message.from_user.id
-    
-    # Calculate credits based on stars amount
-    stars_amount = payment.total_amount
-    credits_purchased = Pricing.CREDIT_PACKAGES.get(stars_amount, stars_amount * 2)
-    
-    # Update user's credits
-    await DatabaseManager.update_user_credits(telegram_id, credits_purchased)
-    
-    # Record payment
-    await DatabaseManager.record_payment(
-        telegram_id=telegram_id,
-        stars_amount=stars_amount,
-        credits_purchased=credits_purchased,
-        transaction_id=payment.telegram_payment_charge_id
-    )
-    
-    # Send confirmation
-    await message.answer(
-        f"🎉 Payment successful!\n\n"
-        f"⭐ {stars_amount} Stars received\n"
-        f"💎 {credits_purchased} credits added to your account\n\n"
-        f"Your total credits: {await get_user_credits(telegram_id)}\n\n"
-        f"Use /gentoken to generate tokens!"
-    )
+    """Handle successful payment with Telegram Stars"""
+    try:
+        payment = message.successful_payment
+        telegram_id = message.from_user.id
+        
+        # Stars are in cents (100 stars = $1.00)
+        stars_amount = payment.total_amount // 100  # Convert to whole stars
+        
+        # Map stars to credits (from Pricing.CREDIT_PACKAGES)
+        credits_purchased = Pricing.CREDIT_PACKAGES.get(stars_amount, stars_amount * 2)
+        
+        logging.info(f"Payment received: {stars_amount} Stars -> {credits_purchased} credits for user {telegram_id}")
+        
+        # Update user's credits
+        success = await DatabaseManager.update_user_credits(telegram_id, credits_purchased)
+        
+        if success:
+            # Record payment
+            await DatabaseManager.record_payment(
+                telegram_id=telegram_id,
+                stars_amount=stars_amount,
+                credits_purchased=credits_purchased,
+                transaction_id=payment.telegram_payment_charge_id
+            )
+            
+            # Send confirmation
+            await message.answer(
+                f"🎉 *Payment Successful!*\n\n"
+                f"⭐ *Stars Received:* {stars_amount}\n"
+                f"💎 *Credits Added:* {credits_purchased}\n"
+                f"💰 *Transaction ID:* `{payment.telegram_payment_charge_id}`\n\n"
+                f"Your total credits: {await get_user_credits(telegram_id)}\n\n"
+                f"Use /gentoken to generate tokens or /mycredits to check balance!",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.answer(
+                "❌ Payment received but failed to update credits. "
+                "Please contact admin with your transaction ID."
+            )
+            
+    except Exception as e:
+        logging.error(f"Payment processing error: {e}")
+        await message.answer(
+            "❌ Error processing payment. Please contact admin with transaction details."
+        )
 
 # ==================== COMMAND HANDLERS ====================
 @dp.message(Command("start"))
@@ -442,6 +461,54 @@ I help you generate secure API tokens for your personal projects.
     ])
     
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=keyboard)
+
+@dp.message(Command("setuppayments"))
+async def cmd_setuppayments(message: Message):
+    """Guide user to set up payments"""
+    if message.from_user.id != Config.ADMIN_ID:
+        await message.answer("❌ Access denied")
+        return
+    
+    setup_guide = """
+🔧 *Payment Setup Guide*
+
+To accept Telegram Stars payments:
+
+1. *Talk to @BotFather*
+2. Send `/mybots`
+3. Select your bot
+4. Choose *Payments*
+5. Follow setup instructions
+6. You'll get a *PROVIDER_TOKEN*
+
+Once you have the provider token:
+
+1. *Add to Render:*
+   - Go to your Render dashboard
+   - Select your service
+   - Go to Environment
+   - Add variable: `PROVIDER_TOKEN`
+   - Paste your token value
+   - Redeploy the bot
+
+2. *Verify setup:* 
+   - Use /buycredits command
+   - Should show payment buttons
+
+*Important:* Payments work with "Telegram Stars" only.
+Users need to have Stars in their Telegram account.
+"""
+    
+    # Check current status
+    if Config.PROVIDER_TOKEN:
+        status = f"✅ *Configured:* Yes\n*Token Preview:* `{Config.PROVIDER_TOKEN[:15]}...`"
+    else:
+        status = "❌ *Configured:* No\n*Token:* Not set"
+    
+    await message.answer(
+        f"*Payment System Status*\n\n{status}\n\n{setup_guide}",
+        parse_mode="Markdown"
+)
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):

@@ -7,3 +7,5 @@ pydantic>=2.5.0
 httpx>=0.25.1
 python-dotenv>=1.0.0
 python-multipart>=0.0.6
+aiohttp>=3.9.0  # Added for ping service
+requests>=2.31.0  # Added as backup HTTP client

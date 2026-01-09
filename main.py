@@ -11,7 +11,8 @@ import logging
 # Add current directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from token_bot import app, bot, dp, on_startup
+from token_bot import app, bot, dp
+from ping import start_pinger_as_background_task
 
 # Initialize logging
 logging.basicConfig(
@@ -19,11 +20,13 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
+# Start auto-pinger as background task (to prevent Render sleep)
+start_pinger_as_background_task(app)
 
 @app.on_event("startup")
 async def startup_event():
     """Run startup tasks"""
-    logging.info("Starting TokenGen Bot...")
+    logging.info("🚀 Starting TokenGen Bot...")
     
     # Set bot commands first
     from aiogram.types import BotCommand
@@ -37,9 +40,9 @@ async def startup_event():
     
     try:
         await bot.set_my_commands(commands)
-        logging.info("Bot commands set successfully")
+        logging.info("✅ Bot commands set successfully")
     except Exception as e:
-        logging.error(f"Error setting commands: {e}")
+        logging.error(f"❌ Error setting commands: {e}")
     
     # Auto-set webhook on startup
     webhook_url = os.environ.get("WEBHOOK_URL", "")
@@ -61,31 +64,51 @@ async def startup_event():
         logging.info(f"✅ Webhook set to: {webhook_url}")
     except Exception as e:
         logging.error(f"❌ Error setting webhook: {e}")
-        
+        # Fallback to polling if webhook fails (for development)
+        if os.environ.get("USE_POLLING", "").lower() == "true":
+            logging.info("⚠️ Falling back to polling mode...")
+            asyncio.create_task(dp.start_polling(bot))
     
-    # Set bot commands
-    from aiogram.types import BotCommand
-    commands = [
-        BotCommand(command="start", description="Start the bot"),
-        BotCommand(command="gentoken", description="Generate a token"),
-        BotCommand(command="mycredits", description="Check your credits"),
-        BotCommand(command="buycredits", description="Buy more credits"),
-        BotCommand(command="help", description="Show help")
-    ]
-    
-    try:
-        await bot.set_my_commands(commands)
-        logging.info("Bot commands set successfully")
-    except Exception as e:
-        logging.error(f"Error setting commands: {e}")
+    logging.info("✅ Bot startup complete!")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
-    logging.info("Shutting down...")
+    logging.info("🛑 Shutting down...")
     await bot.session.close()
+
+@app.get("/health")
+async def health_check():
+    """Enhanced health check endpoint for pinger"""
+    return {
+        "status": "healthy",
+        "service": "TokenGen Bot",
+        "timestamp": asyncio.get_event_loop().time(),
+        "ping": "ok"
+    }
+
+@app.get("/")
+async def root():
+    """Root endpoint with service info"""
+    return {
+        "message": "TokenGen Bot API",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "set_webhook": "/set-webhook",
+            "docs": "/docs"
+        },
+        "ping_service": "active (every 5 minutes)"
+    }
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    host = os.environ.get("HOST", "0.0.0.0")
+    
+    # Check if pinger should be disabled
+    if os.environ.get("DISABLE_PINGER", "").lower() == "true":
+        logging.info("⚠️ Auto-pinger disabled via DISABLE_PINGER environment variable")
+    
+    logging.info(f"🌐 Starting server on {host}:{port}")
+    uvicorn.run(app, host=host, port=port)

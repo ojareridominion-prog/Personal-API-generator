@@ -462,53 +462,7 @@ I help you generate secure API tokens for your personal projects.
     
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=keyboard)
 
-@dp.message(Command("setuppayments"))
-async def cmd_setuppayments(message: Message):
-    """Guide user to set up payments"""
-    if message.from_user.id != Config.ADMIN_ID:
-        await message.answer("❌ Access denied")
-        return
-    
-    setup_guide = """
-🔧 *Payment Setup Guide*
 
-To accept Telegram Stars payments:
-
-1. *Talk to @BotFather*
-2. Send `/mybots`
-3. Select your bot
-4. Choose *Payments*
-5. Follow setup instructions
-6. You'll get a *PROVIDER_TOKEN*
-
-Once you have the provider token:
-
-1. *Add to Render:*
-   - Go to your Render dashboard
-   - Select your service
-   - Go to Environment
-   - Add variable: `PROVIDER_TOKEN`
-   - Paste your token value
-   - Redeploy the bot
-
-2. *Verify setup:* 
-   - Use /buycredits command
-   - Should show payment buttons
-
-*Important:* Payments work with "Telegram Stars" only.
-Users need to have Stars in their Telegram account.
-"""
-    
-    # Check current status
-    if Config.PROVIDER_TOKEN:
-        status = f"✅ *Configured:* Yes\n*Token Preview:* `{Config.PROVIDER_TOKEN[:15]}...`"
-    else:
-        status = "❌ *Configured:* No\n*Token:* Not set"
-    
-    await message.answer(
-        f"*Payment System Status*\n\n{status}\n\n{setup_guide}",
-        parse_mode="Markdown"
-)
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
@@ -1079,6 +1033,54 @@ async def cmd_admin(message: Message):
     ])
     
     await message.answer("🔧 *Admin Panel*", parse_mode="Markdown", reply_markup=keyboard)
+
+@dp.message(Command("setuppayments"))
+async def cmd_setuppayments(message: Message):
+    """Guide user to set up payments"""
+    if message.from_user.id != Config.ADMIN_ID:
+        await message.answer("❌ Access denied")
+        return
+    
+    setup_guide = """
+🔧 *Payment Setup Guide*
+
+To accept Telegram Stars payments:
+
+1. *Talk to @BotFather*
+2. Send `/mybots`
+3. Select your bot
+4. Choose *Payments*
+5. Follow setup instructions
+6. You'll get a *PROVIDER_TOKEN*
+
+Once you have the provider token:
+
+1. *Add to Render:*
+   - Go to your Render dashboard
+   - Select your service
+   - Go to Environment
+   - Add variable: `PROVIDER_TOKEN`
+   - Paste your token value
+   - Redeploy the bot
+
+2. *Verify setup:* 
+   - Use /buycredits command
+   - Should show payment buttons
+
+*Important:* Payments work with "Telegram Stars" only.
+Users need to have Stars in their Telegram account.
+"""
+    
+    # Check current status
+    if Config.PROVIDER_TOKEN:
+        status = f"✅ *Configured:* Yes\n*Token Preview:* `{Config.PROVIDER_TOKEN[:15]}...`"
+    else:
+        status = "❌ *Configured:* No\n*Token:* Not set"
+    
+    await message.answer(
+        f"*Payment System Status*\n\n{status}\n\n{setup_guide}",
+        parse_mode="Markdown"
+    )
 
 @dp.callback_query(F.data.startswith("admin_"))
 async def handle_admin(call: CallbackQuery):

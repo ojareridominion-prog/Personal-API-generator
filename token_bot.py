@@ -1077,3 +1077,178 @@ async def handle_copy(call: CallbackQuery):
     await call.answer("Token copied to clipboard!", show_alert=True)
 
 # ==================== ADMIN COMMANDS ====================
+# ==================== ADMIN COMMANDS ====================
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    """Admin commands"""
+    if message.from_user.id != Config.ADMIN_ID:
+        await message.answer("❌ Access denied")
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Stats", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="👥 Users", callback_data="admin_users")],
+        [InlineKeyboardButton(text="💳 Transactions", callback_data="admin_transactions")]
+    ])
+    
+    await message.answer("🔧 *Admin Panel*", parse_mode="Markdown", reply_markup=keyboard)
+
+@dp.message(Command("setuppayments"))
+async def cmd_setuppayments(message: Message):
+    """Guide user to set up payments"""
+    if message.from_user.id != Config.ADMIN_ID:
+        await message.answer("❌ Access denied")
+        return
+    
+    setup_guide = """
+🔧 *Payment Setup Guide*
+
+To accept Telegram Stars payments:
+
+1. *Talk to @BotFather*
+2. Send `/mybots`
+3. Select your bot
+4. Choose *Payments*
+5. Follow setup instructions
+6. You'll get a *PROVIDER_TOKEN*
+
+Once you have the provider token:
+
+1. *Add to Render:*
+   - Go to your Render dashboard
+   - Select your service
+   - Go to Environment
+   - Add variable: `PROVIDER_TOKEN`
+   - Paste your token value
+   - Redeploy the bot
+
+2. *Verify setup:* 
+   - Use /buycredits command
+   - Should show payment buttons
+
+*Important:* Payments work with "Telegram Stars" only.
+Users need to have Stars in their Telegram account.
+"""
+    
+    # Check current status
+    if Config.PROVIDER_TOKEN:
+        status = f"✅ *Configured:* Yes\n*Token Preview:* `{Config.PROVIDER_TOKEN[:15]}...`"
+    else:
+        status = "❌ *Configured:* No\n*Token:* Not set"
+    
+    await message.answer(
+        f"*Payment System Status*\n\n{status}\n\n{setup_guide}",
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data.startswith("admin_"))
+async def handle_admin(call: CallbackQuery):
+    """Handle admin actions"""
+    if call.from_user.id != Config.ADMIN_ID:
+        await call.answer("❌ Access denied")
+        return
+    
+    action = call.data.split("_")[1]
+    
+    if action == "stats":
+        # Get statistics
+        try:
+            if not supabase:
+                await call.message.answer("❌ Database not configured")
+                return
+                
+            users_count = len(supabase.table("users").select("*").execute().data)
+            payments = supabase.table("payments").select("*").execute().data
+            total_stars = sum(p["stars_amount"] for p in payments)
+            total_tokens = len(supabase.table("token_transactions").select("*").execute().data)
+            
+            text = f"""
+📊 *Bot Statistics*
+
+👥 Total Users: {users_count}
+💳 Total Payments: {len(payments)}
+⭐ Total Stars: {total_stars}
+💰 Estimated Revenue: ${total_stars/100:.2f}
+🔑 Tokens Generated: {total_tokens}
+            """
+            await call.message.answer(text, parse_mode="Markdown")
+        except Exception as e:
+            await call.message.answer(f"Error: {str(e)}")
+
+# ==================== STARTUP ====================
+@app.on_event("startup")
+async def on_startup():
+    """Initialize bot on startup"""
+    logging.basicConfig(level=logging.INFO)
+    logging.info("TokenGen Bot starting up...")
+    
+    # Create tables if they don't exist
+    await create_tables()
+    
+    # Set commands
+    commands = [
+        types.BotCommand(command="start", description="Start the bot"),
+        types.BotCommand(command="gentoken", description="Generate a token"),
+        types.BotCommand(command="mycredits", description="Check your credits"),
+        types.BotCommand(command="buycredits", description="Buy more credits"),
+        types.BotCommand(command="help", description="Show help")
+    ]
+    
+    try:
+        await bot.set_my_commands(commands)
+        logging.info("Bot commands set successfully")
+    except Exception as e:
+        logging.error(f"Error setting commands: {e}")
+    
+    # Check if we should use webhook or polling
+    webhook_url = os.environ.get("WEBHOOK_URL", "")
+    
+    if webhook_url:
+        # Webhook mode (production)
+        logging.info(f"Running in webhook mode. URL: {webhook_url}")
+    else:
+        # Polling mode (development)
+        logging.warning("WEBHOOK_URL not set, using polling mode for development")
+        try:
+            # Start polling in background
+            asyncio.create_task(dp.start_polling(bot))
+            logging.info("Bot polling started")
+        except Exception as e:
+            logging.error(f"Error starting polling: {e}")
+
+# ==================== SHUTDOWN ====================
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Cleanup on shutdown"""
+    logging.info("Shutting down bot...")
+    await bot.session.close()
+
+# ==================== HEALTH CHECK ====================
+@app.get("/")
+async def health_check():
+    """Health check endpoint for Render/Railway"""
+    return {
+        "status": "online",
+        "service": "TokenGen Bot",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.get("/docs")
+async def get_docs():
+    """API documentation"""
+    return {"message": "TokenGen Bot API is running"}
+
+async def create_tables():
+    """Create necessary database tables"""
+    if not supabase:
+        logging.warning("Supabase not configured - running without database")
+        return
+    
+    try:
+        # Check if tables exist, create if not
+        tables = supabase.table("users").select("*").limit(1).execute()
+        logging.info("Database connected successfully")
+    except Exception as e:
+        logging.error(f"Database error: {e}")
+
+# ==================== MAIN ====================

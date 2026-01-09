@@ -641,7 +641,7 @@ async def ask_customization(message: types.Message, state: FSMContext):
     """Ask for custom token parameters"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="32 chars", callback_data="custom_len_32"),
-         InlineKeyboardButton(text="64 chars", callback_data="custom_len_64")],
+        [InlineKeyboardButton(text="64 chars", callback_data="custom_len_64")],
         [InlineKeyboardButton(text="🔤 Letters+Digits", callback_data="custom_chars_ld")],
         [InlineKeyboardButton(text="🔣 Include Special", callback_data="custom_chars_all")],
         [InlineKeyboardButton(text="🏷️ Add Prefix", callback_data="custom_prefix")],
@@ -1132,22 +1132,22 @@ async def get_user_credits(telegram_id: int) -> int:
     user = await DatabaseManager.get_user(telegram_id)
     return user.get("credits", 0) if user else 0
 
-@dp.callback_query(F.data.startswith("menu_"))
-async def handle_menu(call: CallbackQuery, state: FSMContext):
-    """Handle menu navigation"""
-    menu = call.data.split("_")[1]
-    await call.answer()
+#@dp.callback_query(F.data.startswith("menu_"))
+#async def handle_menu(call: CallbackQuery, state: FSMContext):
+    #"""Handle menu navigation"""
+    #menu = call.data.split("_")[1]
+    #await call.answer()
     
-    if menu == "gentoken":
-        await show_token_menu(call.message, state)
-    elif menu == "buy":
-        await cmd_buycredits(call.message)  # This was missing
-    elif menu == "help":
-        await cmd_help(call.message)
-    elif menu == "credits":
-        await cmd_mycredits(call.message)
-    elif menu == "main":
-        await cmd_start(call.message)
+    #if menu == "gentoken":
+        #await show_token_menu(call.message, state)
+    #elif menu == "buy":
+        #await cmd_buycredits(call.message)  # This was missing
+    #elif menu == "help":
+        #await cmd_help(call.message)
+    #elif menu == "credits":
+        #await cmd_mycredits(call.message)
+    #elif menu == "main":
+        #await cmd_start(call.message)
 
 
 @dp.callback_query(F.data.startswith("copy_"))

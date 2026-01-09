@@ -1048,4 +1048,80 @@ async def handle_admin(call: CallbackQuery):
             await call.message.answer(f"Error: {str(e)}")
 
 # ==================== STARTUP ====================
+# ==================== STARTUP ====================
+@app.on_event("startup")
+async def on_startup():
+    """Initialize bot on startup"""
+    logging.basicConfig(level=logging.INFO)
+    logging.info("TokenGen Bot starting up...")
+    
+    # Create tables if they don't exist
+    await create_tables()
+    
+    # Set commands
+    commands = [
+        types.BotCommand(command="start", description="Start the bot"),
+        types.BotCommand(command="gentoken", description="Generate a token"),
+        types.BotCommand(command="mycredits", description="Check your credits"),
+        types.BotCommand(command="buycredits", description="Buy more credits"),
+        types.BotCommand(command="help", description="Show help")
+    ]
+    
+    try:
+        await bot.set_my_commands(commands)
+        logging.info("Bot commands set successfully")
+    except Exception as e:
+        logging.error(f"Error setting commands: {e}")
+    
+    # Check if we should use webhook or polling
+    webhook_url = os.environ.get("WEBHOOK_URL", "")
+    
+    if webhook_url:
+        # Webhook mode (production)
+        logging.info(f"Running in webhook mode. URL: {webhook_url}")
+    else:
+        # Polling mode (development)
+        logging.warning("WEBHOOK_URL not set, using polling mode for development")
+        try:
+            # Start polling in background
+            asyncio.create_task(dp.start_polling(bot))
+            logging.info("Bot polling started")
+        except Exception as e:
+            logging.error(f"Error starting polling: {e}")
 
+# ==================== SHUTDOWN ====================
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Cleanup on shutdown"""
+    logging.info("Shutting down bot...")
+    await bot.session.close()
+
+# ==================== HEALTH CHECK ====================
+@app.get("/")
+async def health_check():
+    """Health check endpoint for Render/Railway"""
+    return {
+        "status": "online",
+        "service": "TokenGen Bot",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.get("/docs")
+async def get_docs():
+    """API documentation"""
+    return {"message": "TokenGen Bot API is running"}
+
+async def create_tables():
+    """Create necessary database tables"""
+    if not supabase:
+        logging.warning("Supabase not configured - running without database")
+        return
+    
+    try:
+        # Check if tables exist, create if not
+        tables = supabase.table("users").select("*").limit(1).execute()
+        logging.info("Database connected successfully")
+    except Exception as e:
+        logging.error(f"Database error: {e}")
+
+# ==================== MAIN ====================

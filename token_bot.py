@@ -576,7 +576,7 @@ async def show_token_menu(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("token_"))
 async def handle_token_selection(call: CallbackQuery, state: FSMContext):
     """Handle token type selection"""
-    token_type = call.data.split("_")[1]
+    callback_data = call.data.split("_")[1]
     await call.answer()
     
     telegram_id = call.from_user.id
@@ -586,17 +586,21 @@ async def handle_token_selection(call: CallbackQuery, state: FSMContext):
     if not user:
         user = await DatabaseManager.create_user(telegram_id)
     
-    # Check credits or free tokens
-    token_type_enum = None
-    try:
-        token_type_enum = TokenType(token_type)
-    except ValueError:
-        # Handle bulk tokens separately
-        if token_type == "bulk":
-            token_type_enum = TokenType.BULK
-        else:
-            await call.message.answer("❌ Invalid token type selected.")
-            return
+    # Map callback data to token type enum
+    token_type_map = {
+        "api": TokenType.API_KEY,
+        "jwt": TokenType.JWT,
+        "uuid": TokenType.UUID,
+        "custom": TokenType.CUSTOM,
+        "bulk": TokenType.BULK
+    }
+    
+    token_type = callback_data
+    token_type_enum = token_type_map.get(callback_data)
+    
+    if not token_type_enum:
+        await call.message.answer("❌ Invalid token type selected.")
+        return
     
     credits_needed = Pricing.PRICES.get(token_type_enum, 5)
     credits_have = user.get("credits", 0)
@@ -759,6 +763,72 @@ async def handle_metadata_input(message: Message, state: FSMContext):
     
     # Clear waiting flag
     await state.update_data(waiting_for=None)
+
+@dp.callback_query(F.data.startswith("buy_"))
+async def handle_buy_selection(call: CallbackQuery):
+    """Handle credit package selection"""
+    try:
+        stars_amount = int(call.data.split("_")[1])
+        credits_amount = Pricing.CREDIT_PACKAGES.get(stars_amount, stars_amount * 2)
+        
+        await call.answer()
+        
+        # Check if payment provider is configured
+        if not Config.PROVIDER_TOKEN or Config.PROVIDER_TOKEN == "":
+            await call.message.answer(
+                "⚠️ *Payment System Not Configured*\n\n"
+                "To enable payments, the admin needs to:\n"
+                "1. Set up payment provider with @BotFather\n"
+                "2. Add PROVIDER_TOKEN to environment variables\n"
+                "3. Redeploy the bot\n\n"
+                "Contact admin for assistance.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Create invoice
+        try:
+            invoice_link = await call.message.bot.create_invoice_link(
+                title=f"TokenGen - {credits_amount} Credits",
+                description=f"Purchase {credits_amount} credits for {stars_amount} Telegram Stars",
+                payload=f"credits_{credits_amount}_{call.from_user.id}_{int(time.time())}",
+                provider_token=Config.PROVIDER_TOKEN,
+                currency="XTR",  # Telegram Stars
+                prices=[
+                    LabeledPrice(
+                        label=f"{credits_amount} Credits",
+                        amount=stars_amount * 100  # Convert to cents
+                    )
+                ]
+            )
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Pay with Telegram Stars", url=invoice_link)],
+                [InlineKeyboardButton(text="🔙 Back to Menu", callback_data="menu_main")]
+            ])
+            
+            await call.message.edit_text(
+                f"*💎 Purchase {credits_amount} Credits*\n\n"
+                f"⭐ *Cost:* {stars_amount} Stars (${stars_amount/100:.2f})\n"
+                f"💎 *You Get:* {credits_amount} credits\n"
+                f"🎯 *Best Value:* {credits_amount/stars_amount:.1f}x more credits than basic rate!\n\n"
+                f"Click the button below to pay with Telegram Stars:",
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+            
+        except Exception as e:
+            logging.error(f"Invoice creation error: {e}")
+            await call.message.answer(
+                f"❌ *Payment Error*\n\n"
+                f"Failed to create payment invoice:\n`{str(e)}`\n\n"
+                f"Please contact the admin for support.",
+                parse_mode="Markdown"
+            )
+            
+    except Exception as e:
+        logging.error(f"Error processing purchase: {e}")
+        await call.message.answer(f"❌ Error: {str(e)}")
 
 # ==================== TOKEN GENERATION ====================
 async def generate_and_send_token(
@@ -1071,13 +1141,14 @@ async def handle_menu(call: CallbackQuery, state: FSMContext):
     if menu == "gentoken":
         await show_token_menu(call.message, state)
     elif menu == "buy":
-        await cmd_buycredits(call.message)
+        await cmd_buycredits(call.message)  # This was missing
     elif menu == "help":
         await cmd_help(call.message)
     elif menu == "credits":
         await cmd_mycredits(call.message)
     elif menu == "main":
         await cmd_start(call.message)
+
 
 @dp.callback_query(F.data.startswith("copy_"))
 async def handle_copy(call: CallbackQuery):

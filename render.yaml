@@ -5,7 +5,7 @@ services:
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
-    startCommand: python main.py  # CHANGED THIS
+    startCommand: python main.py
     envVars:
       - key: PORT
         value: 10000
@@ -23,5 +23,11 @@ services:
         sync: false
       - key: PROVIDER_TOKEN
         sync: false
+      - key: DISABLE_PINGER
+        value: false
+        sync: false
+      - key: USE_POLLING
+        value: false
+        sync: false
     autoDeploy: true
-    healthCheckPath: /
+    healthCheckPath: /health

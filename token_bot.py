@@ -906,21 +906,61 @@ Need more tokens? Use /gentoken
         await state.clear()
 
 # ==================== CREDIT PURCHASE ====================
+
 @dp.message(Command("buycredits"))
 async def cmd_buycredits(message: Message):
-    """Show credit purchase options"""
+    """Show credit purchase options with invoice buttons"""
+    
+    # Check if payments are configured
+    if not Config.PROVIDER_TOKEN:
+        await message.answer(
+            "⚠️ *Payment system is not configured yet.*\n\n"
+            "To set up payments:\n"
+            "1. Talk to @BotFather\n"
+            "2. Send /mybots\n"
+            "3. Select your bot\n"
+            "4. Select Payments\n"
+            "5. Follow the setup instructions\n\n"
+            "Once configured, the admin needs to add the PROVIDER_TOKEN to environment variables.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Create inline keyboard with invoice buttons
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 100 credits (50 Stars)", callback_data="buy_50")],
-        [InlineKeyboardButton(text="💎 250 credits (100 Stars)", callback_data="buy_100")],
-        [InlineKeyboardButton(text="💎 750 credits (250 Stars)", callback_data="buy_250")],
-        [InlineKeyboardButton(text="💎 2000 credits (500 Stars)", callback_data="buy_500")],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="menu_main")]
+        [
+            InlineKeyboardButton(
+                text="💎 100 credits (50 Stars)", 
+                pay=True  # This makes it a payment button
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="💎 250 credits (100 Stars)", 
+                pay=True
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="💎 750 credits (250 Stars)", 
+                pay=True
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="💎 2000 credits (500 Stars)", 
+                pay=True
+            )
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Back", callback_data="menu_main")
+        ]
     ])
     
     text = """
 *Buy Credits*
 
-Choose a credit package:
+Click a package to purchase:
 
 💎 *100 credits* - 50 Stars ($0.50)
 💎 *250 credits* - 100 Stars ($1.00)
@@ -935,60 +975,86 @@ Choose a credit package:
 • 666 UUIDs
 • 250 Custom tokens
 
+*Note:* 100 Stars = $1.00
 Click a package to purchase:
 """
     
     await message.answer(text, parse_mode="Markdown", reply_markup=keyboard)
 
-@dp.callback_query(F.data.startswith("buy_"))
-async def handle_buy_selection(call: CallbackQuery):
-    """Handle credit package selection"""
+@dp.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)
+async def successful_payment_handler(message: Message):
+    """Handle successful payment with Telegram Stars"""
     try:
-        stars_amount = int(call.data.split("_")[1])
-        credits_amount = Pricing.CREDIT_PACKAGES.get(stars_amount, stars_amount * 2)
+        payment = message.successful_payment
+        telegram_id = message.from_user.id
         
-        await call.answer()
+        # Stars are in cents (100 stars = $1.00)
+        stars_amount = payment.total_amount  # Already in cents
         
-        # Create invoice
-        # Note: For production, you need to set up Config.PROVIDER_TOKEN with BotFather
-        if not Config.PROVIDER_TOKEN:
-            await call.message.answer(
-                "⚠️ Payment system is not configured yet.\n\n"
-                "To set up payments:\n"
-                "1. Talk to @BotFather\n"
-                "2. Send /mybots\n"
-                "3. Select your bot\n"
-                "4. Select Payments\n"
-                "5. Follow the setup instructions"
+        # Convert to stars count (divide by 100 if it's in cents)
+        # Actually, Telegram already gives amount in the smallest unit
+        # For Stars, 100 stars = 100 (in total_amount)
+        stars_count = stars_amount  # Since 1 star = 1 cent
+        
+        # Map stars to credits
+        credits_mapping = {
+            50: 100,    # 50 stars = 100 credits
+            100: 250,   # 100 stars = 250 credits
+            250: 750,   # 250 stars = 750 credits
+            500: 2000   # 500 stars = 2000 credits
+        }
+        
+        credits_purchased = credits_mapping.get(stars_count, stars_count * 2)
+        
+        logging.info(f"Payment received: {stars_count} Stars -> {credits_purchased} credits for user {telegram_id}")
+        
+        # Update user's credits
+        success = await DatabaseManager.update_user_credits(telegram_id, credits_purchased)
+        
+        if success:
+            # Record payment
+            await DatabaseManager.record_payment(
+                telegram_id=telegram_id,
+                stars_amount=stars_count,
+                credits_purchased=credits_purchased,
+                transaction_id=payment.telegram_payment_charge_id
             )
-            return
             
-        invoice_link = await bot.create_invoice_link(
-            title=f"TokenGen Bot - {credits_amount} Credits",
-            description=f"Purchase {credits_amount} credits for token generation",
-            payload=f"credits_{credits_amount}_{call.from_user.id}",
-            provider_token=Config.PROVIDER_TOKEN,
-            currency="XTR",
-            prices=[LabeledPrice(label=f"{credits_amount} Credits", amount=stars_amount)]
-        )
-        
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Pay Now", url=invoice_link)],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="menu_buy")]
-        ])
-        
-        await call.message.edit_text(
-            f"*Purchase Confirmation*\n\n"
-            f"⭐ *Stars:* {stars_amount}\n"
-            f"💎 *Credits:* {credits_amount}\n"
-            f"💰 *Value:* ${stars_amount/100:.2f}\n\n"
-            f"Click 'Pay Now' to complete your purchase:",
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
+            # Send confirmation
+            await message.answer(
+                f"🎉 *Payment Successful!*\n\n"
+                f"⭐ *Stars Received:* {stars_count}\n"
+                f"💎 *Credits Added:* {credits_purchased}\n"
+                f"💰 *Transaction ID:* `{payment.telegram_payment_charge_id}`\n\n"
+                f"Your total credits: {await get_user_credits(telegram_id)}\n\n"
+                f"Use /gentoken to generate tokens or /mycredits to check balance!",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.answer(
+                "❌ Payment received but failed to update credits. "
+                "Please contact admin with your transaction ID."
+            )
+            
     except Exception as e:
-        logging.error(f"Error creating invoice: {e}")
-        await call.message.answer(f"❌ Error creating payment link: {str(e)}")
+        logging.error(f"Payment processing error: {e}")
+        await message.answer(
+            "❌ Error processing payment. Please contact admin with transaction details."
+        )
+
+# Add this pre-checkout query handler
+@dp.pre_checkout_query()
+async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
+    """Handle pre-checkout query"""
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@dp.message(F.successful_payment)
+async def process_successful_payment(message: Message):
+    """Process successful payment - this is a backup handler"""
+    await successful_payment_handler(message)
+    
+
+
 
 # ==================== UTILITY FUNCTIONS ====================
 async def get_user_credits(telegram_id: int) -> int:

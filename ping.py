@@ -7,8 +7,8 @@ import asyncio
 import aiohttp
 import logging
 import os
+import socket
 from datetime import datetime
-import sys
 
 # Configure logging
 logging.basicConfig(
@@ -20,57 +20,94 @@ logger = logging.getLogger("ping_service")
 class RenderPinger:
     """Service to ping Render URL periodically to prevent sleep"""
     
-    def __init__(self, ping_url=None, interval_minutes=5):
+    def __init__(self, ping_url=None, interval_minutes=8):
         """
         Initialize the pinger
         
         Args:
             ping_url: URL to ping (if None, tries to auto-detect)
-            interval_minutes: How often to ping (default: 5 minutes)
+            interval_minutes: How often to ping (default: 8 minutes)
         """
-        self.ping_url = ping_url or self._get_render_url()
+        self.ping_url = ping_url or self._get_service_url()
         self.interval_seconds = interval_minutes * 60
         self.is_running = False
+        self.ping_count = 0
         logger.info(f"Initialized pinger for: {self.ping_url}")
         logger.info(f"Interval: {interval_minutes} minutes ({self.interval_seconds} seconds)")
     
-    def _get_render_url(self):
-        """Try to get Render URL from environment or construct it"""
-        # Try environment variables first
+    def _get_service_url(self):
+        """Get the service URL for pinging"""
+        # Priority 1: Use explicitly set PING_URL
+        ping_url = os.environ.get("PING_URL", "")
+        if ping_url:
+            return ping_url.rstrip('/')
+        
+        # Priority 2: Use WEBHOOK_URL without /webhook
         webhook_url = os.environ.get("WEBHOOK_URL", "")
         if webhook_url:
-            # Convert webhook to base URL
-            base_url = webhook_url.replace("/webhook", "")
-            return base_url
+            return webhook_url.replace("/webhook", "").rstrip('/')
         
-        # Try Render external URL
+        # Priority 3: Use RENDER_EXTERNAL_URL
         render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
         if render_url:
-            return render_url
+            return render_url.rstrip('/')
         
-        # Try from service name
+        # Priority 4: Construct from service name
         service_name = os.environ.get("RENDER_SERVICE_NAME", "")
         if service_name:
             return f"https://{service_name}.onrender.com"
         
-        # Default fallback (from main.py)
+        # Priority 5: Try to get hostname (for local testing)
+        try:
+            hostname = socket.gethostname()
+            if 'localhost' in hostname or '127.0.0.1' in hostname:
+                return "http://localhost:8000"
+        except:
+            pass
+        
+        # Final fallback
         return "https://personal-api-generator.onrender.com"
     
     async def ping(self):
         """Send a ping request to keep the service awake"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(self.ping_url, timeout=10) as response:
-                    status = response.status
-                    if status == 200:
-                        logger.info(f"✅ Ping successful to {self.ping_url} - Status: {status}")
-                        return True
-                    else:
-                        logger.warning(f"⚠️ Ping to {self.ping_url} returned status: {status}")
-                        return False
-        except Exception as e:
-            logger.error(f"❌ Ping failed to {self.ping_url}: {str(e)}")
-            return False
+        self.ping_count += 1
+        ping_num = self.ping_count
+        
+        # Try multiple endpoints
+        endpoints = [
+            f"{self.ping_url}/health",
+            f"{self.ping_url}/",
+            f"{self.ping_url}"
+        ]
+        
+        success = False
+        last_error = ""
+        
+        for endpoint in endpoints:
+            try:
+                logger.debug(f"Ping #{ping_num}: Trying {endpoint}")
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+                    async with session.get(endpoint, timeout=10) as response:
+                        status = response.status
+                        if 200 <= status < 300:
+                            logger.info(f"✅ Ping #{ping_num} successful to {endpoint} - Status: {status}")
+                            success = True
+                            break
+                        else:
+                            logger.warning(f"⚠️ Ping #{ping_num} to {endpoint} returned status: {status}")
+            except asyncio.TimeoutError:
+                last_error = f"Timeout connecting to {endpoint}"
+                logger.warning(f"⏰ Ping #{ping_num} timeout for {endpoint}")
+                continue
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"⚠️ Ping #{ping_num} failed for {endpoint}: {e}")
+                continue
+        
+        if not success:
+            logger.error(f"❌ All ping attempts failed for ping #{ping_num}. Last error: {last_error}")
+        
+        return success
     
     async def start(self):
         """Start the periodic pinging service"""
@@ -79,7 +116,7 @@ class RenderPinger:
         logger.info(f"🔗 URL: {self.ping_url}")
         logger.info(f"⏰ Interval: {self.interval_seconds} seconds")
         
-        # Send immediate ping on startup
+        # Initial ping
         await self.ping()
         
         # Start periodic pinging
@@ -87,84 +124,29 @@ class RenderPinger:
             try:
                 await asyncio.sleep(self.interval_seconds)
                 await self.ping()
+                
+                # Log every 10th ping for monitoring
+                if self.ping_count % 10 == 0:
+                    logger.info(f"📊 Pinger status: {self.ping_count} pings sent, still running")
+                    
             except asyncio.CancelledError:
                 logger.info("Pinger service cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in ping loop: {e}")
-                # Wait a bit before retrying
+                # Wait a bit before retrying, but don't stop
                 await asyncio.sleep(60)
     
     async def stop(self):
         """Stop the pinging service"""
         self.is_running = False
         logger.info("🛑 Stopping auto-ping service")
-
-# Global pinger instance
-_pinger = None
-
-def start_pinger_as_background_task(app):
-    """
-    Start pinger as a background task in FastAPI app
-    
-    Usage in main.py:
-        from ping import start_pinger_as_background_task
-        start_pinger_as_background_task(app)
-    """
-    global _pinger
-    
-    @app.on_event("startup")
-    async def startup_pinger():
-        """Start pinger on app startup"""
-        global _pinger
-        
-        # Don't run pinger in development mode or if disabled
-        if os.environ.get("DISABLE_PINGER", "").lower() == "true":
-            logger.info("Pinger disabled by DISABLE_PINGER environment variable")
-            return
-        
-        # Create and start pinger
-        _pinger = RenderPinger()
-        asyncio.create_task(_pinger.start())
-        logger.info("✅ Auto-pinger started as background task")
-    
-    @app.on_event("shutdown")
-    async def shutdown_pinger():
-        """Stop pinger on app shutdown"""
-        global _pinger
-        if _pinger:
-            await _pinger.stop()
-
-def start_pinger_standalone():
-    """
-    Start pinger as a standalone script
-    
-    Usage: python ping.py
-    """
-    global _pinger
-    
-    async def main():
-        """Main async function for standalone mode"""
-        global _pinger
-        logger.info("🚀 Starting standalone ping service...")
-        
-        _pinger = RenderPinger()
-        
-        try:
-            await _pinger.start()
-        except KeyboardInterrupt:
-            logger.info("👋 Received keyboard interrupt, shutting down...")
-            await _pinger.stop()
-        except Exception as e:
-            logger.error(f"Unexpected error: {e}")
-            await _pinger.stop()
-    
-    # Run the async main function
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("👋 Ping service stopped")
+        logger.info(f"📊 Total pings sent: {self.ping_count}")
 
 if __name__ == "__main__":
-    # Run as standalone script
-    start_pinger_standalone()
+    # Run as standalone script for testing
+    async def test_pinger():
+        pinger = RenderPinger()
+        await pinger.start()
+    
+    asyncio.run(test_pinger())

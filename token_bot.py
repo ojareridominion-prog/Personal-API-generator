@@ -373,7 +373,7 @@ async def successful_payment_handler(message: Message):
         telegram_id = message.from_user.id
         
         # Stars are in cents (100 stars = $1.00)
-        stars_amount = payment.total_amount // 100  # Convert to whole stars
+        stars_amount = payment.total_amount  # Convert to whole stars
         
         # Map stars to credits (from Pricing.CREDIT_PACKAGES)
         credits_purchased = Pricing.CREDIT_PACKAGES.get(stars_amount, stars_amount * 2)
@@ -795,7 +795,7 @@ async def handle_buy_selection(call: CallbackQuery):
                 prices=[
                     LabeledPrice(
                         label=f"{credits_amount} Credits",
-                        amount=stars_amount * 100  # Convert to cents
+                        amount=stars_amount  # Convert to cents
                     )
                 ]
             )
